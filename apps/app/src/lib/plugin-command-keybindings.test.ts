@@ -9,7 +9,10 @@ import {
   resolvePluginCommandDefaults,
   shortcutsConflict,
 } from "./plugin-command-keybindings";
-import { setCommandShortcutOverride } from "./keyboard-shortcut-settings";
+import {
+  appShortcutFromInput,
+  setCommandShortcutOverride,
+} from "./keyboard-shortcut-settings";
 
 const shortcut: AppShortcut = {
   key: "i",
@@ -53,6 +56,42 @@ describe("plugin command keybindings", () => {
     ).toEqual(["plugin:bb--git/toggle-diff"]);
     expect(result.conflicts.get("plugin:third-party/open")).toEqual([
       "plugin:bb--git/toggle-diff",
+    ]);
+  });
+
+  it("detects recorded EN/RU collisions without guessing legacy Unicode positions", () => {
+    const recorded = appShortcutFromInput(
+      {
+        key: "л",
+        code: "KeyK",
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+      },
+      "Linux",
+      NO_BUNDLED,
+    );
+    expect(recorded).not.toBeNull();
+    if (!recorded) throw new Error("Expected a recorded shortcut");
+    const legacy = { ...recorded, key: "л" };
+    expect(
+      shortcutsConflict(recorded, { ...recorded, key: "k" }, "Linux"),
+    ).toBe(true);
+    expect(shortcutsConflict(legacy, recorded, "Linux")).toBe(false);
+    const result = resolvePluginCommandDefaults(
+      [
+        binding("thread.search", recorded),
+        binding("plugin:example/open", { ...recorded, key: "k" }),
+      ],
+      [],
+      false,
+      "Linux",
+      NO_BUNDLED,
+    );
+    expect(result.defaults[1]?.shortcut).toBeNull();
+    expect(result.conflicts.get("plugin:example/open")).toEqual([
+      "thread.search",
     ]);
   });
 
