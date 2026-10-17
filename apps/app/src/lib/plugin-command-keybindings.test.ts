@@ -70,7 +70,6 @@ describe("plugin command keybindings", () => {
         shiftKey: false,
       },
       "Linux",
-      NO_BUNDLED,
     );
     expect(recorded).not.toBeNull();
     if (!recorded) throw new Error("Expected a recorded shortcut");

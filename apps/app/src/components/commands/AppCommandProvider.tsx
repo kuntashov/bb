@@ -266,17 +266,17 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
     [isDesktop],
   );
 
+  const hasAvailableHandler = useCallback(
+    (command: KeyboardCommandId, target: EventTarget | null): boolean =>
+      [...(handlersRef.current.get(command)?.values() ?? [])].some(
+        (registration) => registration.isAvailable({ target }),
+      ),
+    [],
+  );
+
   const isCommandAvailable = useCallback(
     (command: KeyboardCommandId, target: EventTarget | null): boolean => {
-      const registrations = handlersRef.current.get(command);
-      if (
-        registrations === undefined ||
-        ![...registrations.values()].some((registration) =>
-          registration.isAvailable({ target }),
-        )
-      ) {
-        return false;
-      }
+      if (!hasAvailableHandler(command, target)) return false;
       const applicable = defaultKeybindings.filter(
         (binding) =>
           binding.command === command &&
@@ -291,7 +291,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
         binding.when.all.every((key) => context[key]),
       );
     },
-    [currentContext, defaultKeybindings, isDesktop],
+    [currentContext, defaultKeybindings, hasAvailableHandler, isDesktop],
   );
 
   const getShortcut = useCallback(
@@ -363,6 +363,8 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
             })
           )
             return false;
+          if (!hasAvailableHandler(candidate.command, event.target))
+            return false;
           context ??= currentContext(event.target);
           return matchesAppCommandContext(candidate, context);
         },
@@ -372,7 +374,7 @@ export function AppCommandProvider({ children }: { children: ReactNode }) {
       event.stopPropagation();
       return true;
     },
-    [currentContext, dispatch, isDesktop],
+    [currentContext, dispatch, hasAvailableHandler, isDesktop],
   );
 
   useEffect(() => {
