@@ -1,0 +1,135 @@
+name: Build private hotkeys 5778 artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: e1927ee077cf810a090a4b04de2cb765da9dce4a
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+  VITEST_MAX_WORKERS: "2"
+
+jobs:
+  package:
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-server-x64
+          - os: windows-2025
+            target: windows-desktop-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22.x"
+          package-manager-cache: false
+      - name: Install pnpm
+        run: npm install --global pnpm@9.15.0 --ignore-scripts
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: pnpm install --frozen-lockfile
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify source and version
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          for (const path of ['packages/bb-app/package.json', 'apps/desktop/package.json']) {
+            if (JSON.parse(readFileSync(path)).version !== '0.48.1') throw new Error(path);
+          }
+          NODE
+      - name: Linux regression checks
+        if: runner.os == 'Linux'
+        run: pnpm exec turbo run typecheck test --filter=@bb/app --filter=@bb/domain --filter=@bb/cli --filter=@bb/server --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Build server package assets
+        run: pnpm exec turbo run build --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Record provenance inside server package
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p delivery
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const manifest = {
+            version: '0.48.1', sourceSha: process.env.SOURCE_SHA,
+            workflowSha: process.env.WORKFLOW_SHA, target: process.env.TARGET,
+            runUrl: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            node: process.version, unsigned: true,
+          };
+          const json = JSON.stringify(manifest, null, 2) + '\n';
+          writeFileSync('packages/bb-app/dist/custom-build.json', json);
+          writeFileSync('delivery/build-manifest.json', json);
+          NODE
+      - name: Linux tarball smoke
+        if: runner.os == 'Linux'
+        run: pnpm exec turbo run smoke:tarball --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Pack Linux server
+        if: runner.os == 'Linux'
+        run: npm pack ./packages/bb-app --pack-destination ./delivery
+      - name: Verify exact Linux delivery tarball install
+        if: runner.os == 'Linux'
+        run: |
+          tar -xOf delivery/bb-app-0.48.1.tgz package/dist/custom-build.json > delivery/embedded-manifest.json
+          cmp delivery/build-manifest.json delivery/embedded-manifest.json
+          npm install --prefix "$RUNNER_TEMP/delivery-install" "$PWD/delivery/bb-app-0.48.1.tgz" --no-audit --no-fund
+          "$RUNNER_TEMP/delivery-install/node_modules/.bin/bb-app" --help
+          "$RUNNER_TEMP/delivery-install/node_modules/.bin/bb" --help
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        env:
+          BB_DESKTOP_COMMIT: ${{ env.SOURCE_SHA }}
+        run: pnpm exec turbo run desktop:build:win --filter=@bb/desktop --concurrency=2 --env-mode=loose --output-logs=new-only
+      - name: Windows packaged smoke
+        if: runner.os == 'Windows'
+        run: pnpm exec turbo run smoke:packaged --filter=@bb/desktop --output-logs=new-only
+      - name: Verify Windows packaged source and archive
+        if: runner.os == 'Windows'
+        run: |
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          import { readFileSync } from 'node:fs';
+          const require = createRequire(import.meta.url);
+          const builderRequire = createRequire(require.resolve('electron-builder', { paths: ['./apps/desktop'] }));
+          const asar = builderRequire('@electron/asar');
+          const archive = 'apps/desktop/release/win-unpacked/resources/app.asar';
+          const main = asar.extractFile(archive, 'dist/main.js').toString();
+          if (!main.includes(process.env.SOURCE_SHA)) throw new Error('Missing source SHA in desktop');
+          const metadata = JSON.parse(asar.extractFile(archive, 'package.json').toString());
+          if (metadata.version !== '0.48.1') throw new Error('Incorrect desktop version');
+          const exe = readFileSync('apps/desktop/release/bb-0.48.1-x64.exe');
+          if (exe.toString('ascii', 0, 2) !== 'MZ') throw new Error('Invalid installer');
+          NODE
+          cp apps/desktop/release/bb-0.48.1-x64.exe delivery/
+      - name: Record delivery checksums
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          const files = readdirSync('delivery').filter(p => /\.(tgz|exe|json)$/.test(p)).sort();
+          const checksums = files.map(p => `${createHash('sha256').update(readFileSync(`delivery/${p}`)).digest('hex')}  ${p}\n`).join('');
+          writeFileSync('delivery/SHA256SUMS', checksums);
+          console.log(checksums);
+          NODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bb-0.48.1-hotkeys-e1927ee-${{ matrix.target }}
+          path: delivery/
+          if-no-files-found: error
+          retention-days: 30
