@@ -3,6 +3,10 @@ name: Build private hotkeys 5778 artifacts
 on:
   workflow_dispatch:
     inputs:
+      verify_server_run:
+        description: Verify an existing Linux artifact on production Node 24 without rebuilding
+        type: string
+        default: ""
       windows_only:
         description: Rebuild only the Windows installer
         type: boolean
@@ -18,7 +22,7 @@ env:
 
 jobs:
   package:
-    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1'
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1' && inputs.verify_server_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -150,3 +154,37 @@ jobs:
           path: delivery/
           if-no-files-found: error
           retention-days: 30
+
+  verify-linux-node24:
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1' && inputs.verify_server_run != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.21.0"
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bb-0.48.1-hotkeys-e1927ee-linux-server-x64
+          path: delivery
+          run-id: ${{ inputs.verify_server_run }}
+          github-token: ${{ github.token }}
+      - name: Verify artifact integrity and source
+        run: |
+          cd delivery
+          sha256sum --check SHA256SUMS
+          node -e "if(require('./build-manifest.json').sourceSha !== process.env.SOURCE_SHA) process.exit(1)"
+      - name: Install exact delivery tarball on production Node version
+        run: npm install --prefix "$RUNNER_TEMP/installed" "$PWD/delivery/bb-app-0.48.1.tgz" --no-audit --no-fund
+      - name: Boot installed package with disposable data using upstream smoke
+        run: |
+          mkdir -p "$RUNNER_TEMP/installed/node_modules/bb-app/scripts"
+          cp packages/bb-app/scripts/smoke-boot.mjs "$RUNNER_TEMP/installed/node_modules/bb-app/scripts/"
+          node "$RUNNER_TEMP/installed/node_modules/bb-app/scripts/smoke-boot.mjs"
