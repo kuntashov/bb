@@ -1,0 +1,95 @@
+name: Plugin SDK types
+
+on:
+  push:
+    branches: [ci/sdk-types-github-hosted]
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Fork branch or commit SHA to build (empty uses workflow ref)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sdk-types-${{ github.ref }}-${{ inputs.target_ref || 'workflow-ref' }}
+  cancel-in-progress: true
+
+jobs:
+  types:
+    if: github.repository == 'kuntashov/bb'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      TURBO_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.target_ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22.x"
+          package-manager-cache: false
+
+      - name: Set up pnpm from packageManager
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86
+
+      - name: Record build provenance
+        run: |
+          mkdir -p "$RUNNER_TEMP/sdk-types"
+          {
+            echo "Target SHA: $(git rev-parse HEAD)"
+            echo "Workflow SHA: $GITHUB_SHA"
+            echo "Runner: $RUNNER_NAME ($RUNNER_OS/$RUNNER_ARCH)"
+            node --version
+            pnpm --version
+            sha256sum pnpm-lock.yaml
+            free -m
+          } | tee "$RUNNER_TEMP/sdk-types/provenance.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install frozen dependencies
+        timeout-minutes: 10
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build SDK declarations
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          /usr/bin/time -v -o "$RUNNER_TEMP/sdk-types/resources.txt" \
+            pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk \
+              --force --concurrency=1 --output-logs=full \
+            2>&1 | tee "$RUNNER_TEMP/sdk-types/build.log"
+
+      - name: Verify declaration outputs
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, statSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync('packages/plugin-sdk/package.json', 'utf8'));
+          for (const entry of Object.values(pkg.exports)) {
+            const file = 'packages/plugin-sdk/' + entry.types;
+            if (!statSync(file).isFile() || statSync(file).size === 0) {
+              throw new Error('Missing or empty declaration: ' + file);
+            }
+            console.log(file);
+          }
+          NODE
+
+      - name: Upload build evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sdk-types-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/sdk-types/
+            packages/plugin-sdk/bundled-types/*.d.ts
+          retention-days: 3
+          if-no-files-found: error
