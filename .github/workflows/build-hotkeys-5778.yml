@@ -3,6 +3,10 @@ name: Build release-based hotkeys 5778 artifacts
 on:
   workflow_dispatch:
     inputs:
+      verify_windows_run:
+        description: Verify an existing Windows installer by launching its installed application
+        type: string
+        default: ""
       verify_server_run:
         description: Verify an existing Linux artifact on production Node 24 without rebuilding
         type: string
@@ -23,7 +27,7 @@ env:
 
 jobs:
   package:
-    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1' && inputs.verify_server_run == ''
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1' && inputs.verify_server_run == '' && inputs.verify_windows_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -206,3 +210,46 @@ jobs:
           mkdir -p "$RUNNER_TEMP/installed/node_modules/bb-app/scripts"
           cp packages/bb-app/scripts/smoke-boot.mjs "$RUNNER_TEMP/installed/node_modules/bb-app/scripts/"
           node "$RUNNER_TEMP/installed/node_modules/bb-app/scripts/smoke-boot.mjs"
+
+  verify-windows-installed:
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/build/hotkeys-5778-0.48.1' && inputs.verify_windows_run != ''
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22.x"
+          package-manager-cache: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: bb-0.48.1-release-hotkeys-61287fc-windows-desktop-x64
+          path: delivery
+          run-id: ${{ inputs.verify_windows_run }}
+          github-token: ${{ github.token }}
+      - name: Verify and install downloaded Windows delivery artifact
+        shell: pwsh
+        run: |
+          Get-Content delivery/SHA256SUMS | ForEach-Object {
+            if ($_ -notmatch '^([a-f0-9]{64})  (.+)$') { throw 'Malformed checksum' }
+            $expected = $Matches[1]
+            $file = Join-Path 'delivery' $Matches[2]
+            if ((Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw "Checksum mismatch: $file" }
+          }
+          $manifest = Get-Content delivery/build-manifest.json | ConvertFrom-Json
+          if ($manifest.sourceSha -ne $env:SOURCE_SHA) { throw 'Unexpected source SHA' }
+          $installer = (Resolve-Path 'delivery/bb-0.48.1-x64.exe').Path
+          $destination = Join-Path $env:RUNNER_TEMP 'bb-installed-delivery'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$destination") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer exit code: $($process.ExitCode)" }
+          New-Item -ItemType Directory -Path apps/desktop/release -Force | Out-Null
+          New-Item -ItemType Junction -Path apps/desktop/release/win-unpacked -Target $destination | Out-Null
+          "Installed binary: $destination/bb.exe"
+      - name: Smoke installed desktop and bundled npm with disposable data
+        shell: pwsh
+        run: node apps/desktop/scripts/smoke-packaged-app.mjs
