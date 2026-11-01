@@ -2,6 +2,11 @@ name: Build private hotkeys 5778 artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Rebuild only the Windows installer
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -17,11 +22,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            target: linux-server-x64
-          - os: windows-2025
-            target: windows-desktop-x64
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-2025","target":"windows-desktop-x64"}]' || '[{"os":"ubuntu-24.04","target":"linux-server-x64"},{"os":"windows-2025","target":"windows-desktop-x64"}]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     defaults:
@@ -107,7 +108,8 @@ jobs:
           import { readFileSync } from 'node:fs';
           const require = createRequire(import.meta.url);
           const builderRequire = createRequire(require.resolve('electron-builder', { paths: ['./apps/desktop'] }));
-          const asar = builderRequire('@electron/asar');
+          const appBuilderRequire = createRequire(builderRequire.resolve('app-builder-lib'));
+          const asar = appBuilderRequire('@electron/asar');
           const archive = 'apps/desktop/release/win-unpacked/resources/app.asar';
           const main = asar.extractFile(archive, 'dist/main.js').toString();
           if (!main.includes(process.env.SOURCE_SHA)) throw new Error('Missing source SHA in desktop');
@@ -117,6 +119,21 @@ jobs:
           if (exe.toString('ascii', 0, 2) !== 'MZ') throw new Error('Invalid installer');
           NODE
           cp apps/desktop/release/bb-0.48.1-x64.exe delivery/
+      - name: Verify Windows installer installation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path 'delivery/bb-0.48.1-x64.exe').Path
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'NotSigned') { throw "Unexpected signature: $($signature.Status)" }
+          $destination = Join-Path $env:RUNNER_TEMP 'bb-installer-check'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$destination") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer exit code: $($process.ExitCode)" }
+          if (!(Test-Path "$destination/bb.exe")) { throw 'Installer did not install bb.exe' }
+          $expected = (Get-FileHash 'apps/desktop/release/win-unpacked/resources/app.asar' -Algorithm SHA256).Hash
+          $actual = (Get-FileHash "$destination/resources/app.asar" -Algorithm SHA256).Hash
+          if ($expected -ne $actual) { throw 'Installed application differs from smoked package' }
+          "Installed app.asar SHA256: $actual" | Tee-Object -FilePath delivery/installer-check.txt
       - name: Record delivery checksums
         run: |
           node --input-type=module <<'NODE'
