@@ -73,8 +73,8 @@ jobs:
       - name: Linux regression checks
         if: runner.os == 'Linux'
         run: pnpm exec turbo run typecheck test --filter=@bb/app --filter=@bb/domain --filter=@bb/cli --filter=@bb/server --filter=bb-app --concurrency=2 --output-logs=new-only
-      - name: Windows desktop typecheck
-        if: runner.os == 'Windows'
+      - name: Linux desktop typecheck
+        if: runner.os == 'Linux'
         run: pnpm exec turbo run typecheck --filter=@bb/desktop --concurrency=2 --output-logs=new-only
       - name: Windows hotkeys regression
         if: runner.os == 'Windows'
