@@ -1,4 +1,4 @@
-name: Build private hotkeys 5778 artifacts
+name: Build release-based hotkeys 5778 artifacts
 
 on:
   workflow_dispatch:
@@ -16,7 +16,8 @@ permissions:
   contents: read
 
 env:
-  SOURCE_SHA: e1927ee077cf810a090a4b04de2cb765da9dce4a
+  SOURCE_SHA: 61287fcfdf9669354367bd599e7277a905a96117
+  RELEASE_SHA: e003e9510cbfd3bb6c26a28630b46ffb1c242a44
   CSC_IDENTITY_AUTO_DISCOVERY: "false"
   VITEST_MAX_WORKERS: "2"
 
@@ -49,18 +50,35 @@ jobs:
       - name: Install Windows dependencies
         if: runner.os == 'Windows'
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Verify source and version
+      - name: Verify release scope, source and version
         run: |
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags --depth=1 origin "$RELEASE_SHA"
+          git diff --exit-code "$RELEASE_SHA" HEAD -- packages/db packages/host-daemon-contract pnpm-lock.yaml ':glob:**/package.json'
+          git diff --check "$RELEASE_SHA" HEAD
+          mkdir -p delivery
           node --input-type=module <<'NODE'
-          import { readFileSync } from 'node:fs';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const allowed = ["apps/app/src/components/commands/AppCommandProvider.test.tsx", "apps/app/src/components/commands/AppCommandProvider.tsx", "apps/app/src/components/commands/CommandPalette.test.tsx", "apps/app/src/lib/keyboard-shortcut-settings.test.ts", "apps/app/src/lib/plugin-command-keybindings.test.ts", "apps/cli/src/__tests__/command-output/settings.test.ts", "apps/desktop/src/desktop-browser-shortcuts.ts", "apps/desktop/src/desktop-reload-shortcut.ts", "apps/desktop/test/desktop-browser-shortcuts.test.ts", "apps/desktop/test/desktop-reload-shortcut.test.ts", "apps/server/test/system/app-keybindings.test.ts", "docs/configuration.md", "packages/domain/src/app-keybindings.ts", "packages/templates/src/templates/bb-guide-customization.md"];
+          const changedFiles = execFileSync('git', ['diff', '--name-only', process.env.RELEASE_SHA, 'HEAD'], {encoding: 'utf8'}).trim().split('\n');
+          if (JSON.stringify(changedFiles) !== JSON.stringify(allowed)) throw new Error('Unexpected source scope');
           for (const path of ['packages/bb-app/package.json', 'apps/desktop/package.json']) {
             if (JSON.parse(readFileSync(path)).version !== '0.48.1') throw new Error(path);
           }
+          const scope = {releaseSha: process.env.RELEASE_SHA, sourceSha: process.env.SOURCE_SHA, changedFiles, protectedPathsUnchanged: true};
+          writeFileSync('delivery/source-scope.json', JSON.stringify(scope, null, 2) + '\n');
+          console.log(JSON.stringify(scope, null, 2));
           NODE
       - name: Linux regression checks
         if: runner.os == 'Linux'
         run: pnpm exec turbo run typecheck test --filter=@bb/app --filter=@bb/domain --filter=@bb/cli --filter=@bb/server --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Windows desktop typecheck
+        if: runner.os == 'Windows'
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --concurrency=2 --output-logs=new-only
+      - name: Windows hotkeys regression
+        if: runner.os == 'Windows'
+        run: pnpm exec turbo run test --filter=@bb/desktop --concurrency=2 --output-logs=new-only -- test/desktop-browser-shortcuts.test.ts test/desktop-reload-shortcut.test.ts
       - name: Build server package assets
         run: pnpm exec turbo run build --filter=bb-app --concurrency=2 --output-logs=new-only
       - name: Record provenance inside server package
@@ -72,7 +90,7 @@ jobs:
           node --input-type=module <<'NODE'
           import { writeFileSync } from 'node:fs';
           const manifest = {
-            version: '0.48.1', sourceSha: process.env.SOURCE_SHA,
+            version: '0.48.1', sourceSha: process.env.SOURCE_SHA, releaseSha: process.env.RELEASE_SHA,
             workflowSha: process.env.WORKFLOW_SHA, target: process.env.TARGET,
             runUrl: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
             runAttempt: process.env.GITHUB_RUN_ATTEMPT,
@@ -150,7 +168,7 @@ jobs:
           NODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: bb-0.48.1-hotkeys-e1927ee-${{ matrix.target }}
+          name: bb-0.48.1-release-hotkeys-61287fc-${{ matrix.target }}
           path: delivery/
           if-no-files-found: error
           retention-days: 30
@@ -172,7 +190,7 @@ jobs:
           package-manager-cache: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          name: bb-0.48.1-hotkeys-e1927ee-linux-server-x64
+          name: bb-0.48.1-release-hotkeys-61287fc-linux-server-x64
           path: delivery
           run-id: ${{ inputs.verify_server_run }}
           github-token: ${{ github.token }}
