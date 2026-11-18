@@ -1,0 +1,37 @@
+name: Hotkeys #3967 validation
+on:
+  push:
+    branches: [ci/hotkeys-3967-validation]
+permissions:
+  contents: read
+jobs:
+  baseline:
+    if: ${{ !startsWith(github.event.head_commit.message, 'Validate fixed') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.github/actions/setup-workspace-tools
+        with:
+          node-version: '22.x'
+          pnpm-version: '9.15.0'
+      - run: bash .github/actions/setup-workspace/install-dependencies.sh --ignore-scripts --filter bb --filter '@bb/domain...'
+      - name: Reproduce with the upstream matcher
+        run: |
+          node --experimental-strip-types --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { matchesAppShortcut } from './packages/domain/src/app-keybindings.ts';
+          const input = { code: 'KeyK', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false };
+          const shortcut = { key: 'k', control: true, mod: false, meta: false, alt: false, shift: false };
+          for (const [layout, key, expected] of [
+            ['English', 'k', true], ['Russian', 'л', false], ['Greek', 'κ', false],
+            ['Hebrew', 'ל', false], ['Arabic', 'ن', false],
+          ]) {
+            const actual = matchesAppShortcut({ ...input, key }, shortcut, false);
+            console.log(layout, { key, code: input.code, actual, expected });
+            assert.equal(actual, expected);
+          }
+          const literal = matchesAppShortcut({ ...input, key: 'л' }, { ...shortcut, key: 'л' }, false);
+          console.log('Explicit Cyrillic binding', literal);
+          assert.equal(literal, true);
+          JS
