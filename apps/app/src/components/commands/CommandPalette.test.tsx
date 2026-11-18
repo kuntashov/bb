@@ -636,9 +636,14 @@ describe("CommandPalette", () => {
     expect(routeNavigateMock).not.toHaveBeenCalled();
   });
 
-  it.each(["commands", "threads"])(
-    "runs an available shortcut from %s even with no matches, after closing and restoring focus",
-    async (mode) => {
+  it.each([
+    ["commands", "o"],
+    ["threads", "o"],
+    ["commands", "щ"],
+    ["threads", "щ"],
+  ])(
+    "runs an available %s shortcut (%s) even with no matches, restoring the origin",
+    async (mode, key) => {
       renderPalette();
       if (mode === "commands") await openPalette();
       else await openThreadSearch();
@@ -647,7 +652,8 @@ describe("CommandPalette", () => {
       expect(screen.queryAllByRole("option")).toHaveLength(0);
 
       fireEvent.keyDown(searchField(), {
-        key: "o",
+        key,
+        code: "KeyO",
         ctrlKey: true,
         shiftKey: true,
       });
