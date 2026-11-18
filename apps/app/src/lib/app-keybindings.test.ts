@@ -70,6 +70,37 @@ describe("app keybindings", () => {
     );
   });
 
+  it.each([
+    ["k", "KeyK", "k", true],
+    ["л", "KeyK", "k", true],
+    ["κ", "KeyK", "k", true],
+    ["ל", "KeyK", "k", true],
+    ["ن", "KeyK", "k", true],
+    ["Ж", "Semicolon", ";", true],
+    ["л", "KeyK", "л", true],
+    ["л", "", "л", true],
+    ["л", "", "k", false],
+    ["a", "KeyQ", "a", true],
+    ["a", "KeyQ", "q", false],
+    ["Dead", "KeyK", "k", false],
+    ["Unidentified", "KeyK", "k", false],
+  ])("matches %s (%s) to Ctrl+%s: %s", (key, code, bindingKey, expected) => {
+    expect(
+      matchesAppShortcut(
+        {
+          key,
+          code,
+          metaKey: false,
+          ctrlKey: true,
+          altKey: false,
+          shiftKey: false,
+        },
+        { ...MOD_N, key: bindingKey },
+        false,
+      ),
+    ).toBe(expected);
+  });
+
   it("matches shifted punctuation against its unshifted binding key", () => {
     expect(
       matchesAppShortcut(
