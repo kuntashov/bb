@@ -1,0 +1,177 @@
+name: Verify BB 0.50.1 hotkeys upgrade
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows_only:
+        description: Build only the Windows installer
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 215e46f66e2cfca788e2b57153a905a438fa96d0
+  RELEASE_SHA: a08e116566d1785bc04578a866df8a0359157dd4
+  CSC_IDENTITY_AUTO_DISCOVERY: "false"
+  VITEST_MAX_WORKERS: "2"
+  TURBO_TELEMETRY_DISABLED: "1"
+
+jobs:
+  package:
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/audit/bb-0.50.1-hotkeys'
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.windows_only && '[{"os":"windows-2025","target":"windows-desktop-x64"}]' || '[{"os":"ubuntu-24.04","target":"linux-server-x64"},{"os":"windows-2025","target":"windows-desktop-x64"}]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.x"
+          package-manager-cache: false
+      - name: Install pnpm
+        run: npm install --global pnpm@9.15.0 --ignore-scripts
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: pnpm install --frozen-lockfile
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Verify release scope, source and version
+        run: |
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          git fetch --no-tags --depth=1 origin "$RELEASE_SHA"
+          git diff --exit-code "$RELEASE_SHA" HEAD -- packages/db packages/host-daemon-contract pnpm-lock.yaml ':glob:**/package.json'
+          git diff --check "$RELEASE_SHA" HEAD
+          mkdir -p delivery
+          node --input-type=module <<'NODE'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { execFileSync } from 'node:child_process';
+          const allowed = ["apps/app/src/components/commands/AppCommandProvider.test.tsx", "apps/app/src/components/commands/AppCommandProvider.tsx", "apps/app/src/components/commands/CommandPalette.test.tsx", "apps/app/src/lib/keyboard-shortcut-settings.test.ts", "apps/app/src/lib/plugin-command-keybindings.test.ts", "apps/cli/src/__tests__/command-output/settings.test.ts", "apps/desktop/src/desktop-browser-shortcuts.ts", "apps/desktop/src/desktop-reload-shortcut.ts", "apps/desktop/test/desktop-browser-shortcuts.test.ts", "apps/desktop/test/desktop-reload-shortcut.test.ts", "apps/server/test/system/app-keybindings.test.ts", "docs/configuration.md", "packages/domain/src/app-keybindings.ts", "packages/templates/src/templates/bb-guide-customization.md"];
+          const changedFiles = execFileSync('git', ['diff', '--name-only', process.env.RELEASE_SHA, 'HEAD'], {encoding: 'utf8'}).trim().split('\n');
+          if (JSON.stringify(changedFiles) !== JSON.stringify(allowed)) throw new Error('Unexpected source scope');
+          for (const path of ['packages/bb-app/package.json', 'apps/desktop/package.json']) {
+            if (JSON.parse(readFileSync(path)).version !== '0.50.1') throw new Error(path);
+          }
+          const scope = {releaseSha: process.env.RELEASE_SHA, sourceSha: process.env.SOURCE_SHA, changedFiles, protectedPathsUnchanged: true};
+          writeFileSync('delivery/source-scope.json', JSON.stringify(scope, null, 2) + '\n');
+          console.log(JSON.stringify(scope, null, 2));
+          NODE
+      - name: Linux regression checks
+        if: runner.os == 'Linux'
+        run: |
+          pnpm exec turbo run typecheck --filter=@bb/app --filter=@bb/domain --filter=@bb/cli --filter=@bb/server --concurrency=2 --output-logs=new-only
+          pnpm exec turbo run test --filter=@bb/app --concurrency=2 --output-logs=new-only -- src/components/commands/AppCommandProvider.test.tsx src/components/commands/CommandPalette.test.tsx src/lib/keyboard-shortcut-settings.test.ts src/lib/plugin-command-keybindings.test.ts
+          pnpm exec turbo run test --filter=@bb/cli --concurrency=2 --output-logs=new-only -- src/__tests__/command-output/settings.test.ts
+          pnpm exec turbo run test --filter=@bb/server --concurrency=2 --output-logs=new-only -- test/system/app-keybindings.test.ts
+          pnpm exec turbo run test --filter=@bb/plugin-inline-vis --concurrency=2 --output-logs=new-only
+      - name: Linux desktop typecheck
+        if: runner.os == 'Linux'
+        run: pnpm exec turbo run typecheck --filter=@bb/desktop --concurrency=2 --output-logs=new-only
+      - name: Windows hotkeys regression
+        if: runner.os == 'Windows'
+        run: pnpm exec turbo run test --filter=@bb/desktop --concurrency=2 --output-logs=new-only -- test/desktop-browser-shortcuts.test.ts test/desktop-reload-shortcut.test.ts
+      - name: Build server package assets
+        run: pnpm exec turbo run build --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Record provenance inside server package
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p delivery
+          node --input-type=module <<'NODE'
+          import { writeFileSync } from 'node:fs';
+          const manifest = {
+            version: '0.50.1', sourceSha: process.env.SOURCE_SHA, releaseSha: process.env.RELEASE_SHA,
+            workflowSha: process.env.WORKFLOW_SHA, target: process.env.TARGET,
+            runUrl: `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            node: process.version, unsigned: true,
+          };
+          const json = JSON.stringify(manifest, null, 2) + '\n';
+          writeFileSync('packages/bb-app/dist/custom-build.json', json);
+          writeFileSync('delivery/build-manifest.json', json);
+          NODE
+      - name: Linux tarball smoke
+        if: runner.os == 'Linux'
+        run: pnpm exec turbo run smoke:tarball --filter=bb-app --concurrency=2 --output-logs=new-only
+      - name: Pack Linux server
+        if: runner.os == 'Linux'
+        run: npm pack ./packages/bb-app --pack-destination ./delivery
+      - name: Verify exact Linux delivery tarball install
+        if: runner.os == 'Linux'
+        run: |
+          tar -xOf delivery/bb-app-0.50.1.tgz package/dist/custom-build.json > delivery/embedded-manifest.json
+          cmp delivery/build-manifest.json delivery/embedded-manifest.json
+          npm install --prefix "$RUNNER_TEMP/delivery-install" "$PWD/delivery/bb-app-0.50.1.tgz" --no-audit --no-fund
+          "$RUNNER_TEMP/delivery-install/node_modules/.bin/bb-app" --help
+          "$RUNNER_TEMP/delivery-install/node_modules/.bin/bb" --help
+      - name: Package Windows installer
+        if: runner.os == 'Windows'
+        env:
+          BB_DESKTOP_COMMIT: ${{ env.SOURCE_SHA }}
+        run: pnpm exec turbo run desktop:build:win --filter=@bb/desktop --concurrency=2 --env-mode=loose --output-logs=new-only
+      - name: Windows packaged smoke
+        if: runner.os == 'Windows'
+        run: pnpm exec turbo run smoke:packaged --filter=@bb/desktop --output-logs=new-only
+      - name: Verify Windows packaged source and archive
+        if: runner.os == 'Windows'
+        run: |
+          node --input-type=module <<'NODE'
+          import { createRequire } from 'node:module';
+          import { readFileSync } from 'node:fs';
+          const require = createRequire(import.meta.url);
+          const builderRequire = createRequire(require.resolve('electron-builder', { paths: ['./apps/desktop'] }));
+          const appBuilderRequire = createRequire(builderRequire.resolve('app-builder-lib'));
+          const asar = appBuilderRequire('@electron/asar');
+          const archive = 'apps/desktop/release/win-unpacked/resources/app.asar';
+          const main = asar.extractFile(archive, 'dist/main.js').toString();
+          if (!main.includes(process.env.SOURCE_SHA)) throw new Error('Missing source SHA in desktop');
+          const metadata = JSON.parse(asar.extractFile(archive, 'package.json').toString());
+          if (metadata.version !== '0.50.1') throw new Error('Incorrect desktop version');
+          const exe = readFileSync('apps/desktop/release/bb-0.50.1-x64.exe');
+          if (exe.toString('ascii', 0, 2) !== 'MZ') throw new Error('Invalid installer');
+          NODE
+          cp apps/desktop/release/bb-0.50.1-x64.exe delivery/
+      - name: Verify Windows installer installation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path 'delivery/bb-0.50.1-x64.exe').Path
+          $signature = Get-AuthenticodeSignature $installer
+          if ($signature.Status -ne 'NotSigned') { throw "Unexpected signature: $($signature.Status)" }
+          $destination = Join-Path $env:RUNNER_TEMP 'bb-installer-check'
+          $process = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$destination") -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw "Installer exit code: $($process.ExitCode)" }
+          if (!(Test-Path "$destination/bb.exe")) { throw 'Installer did not install bb.exe' }
+          $expected = (Get-FileHash 'apps/desktop/release/win-unpacked/resources/app.asar' -Algorithm SHA256).Hash
+          $actual = (Get-FileHash "$destination/resources/app.asar" -Algorithm SHA256).Hash
+          if ($expected -ne $actual) { throw 'Installed application differs from smoked package' }
+          "Installed app.asar SHA256: $actual" | Tee-Object -FilePath delivery/installer-check.txt
+      - name: Record delivery checksums
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+          const files = readdirSync('delivery').filter(p => /\.(tgz|exe|json)$/.test(p)).sort();
+          const checksums = files.map(p => `${createHash('sha256').update(readFileSync(`delivery/${p}`)).digest('hex')}  ${p}\n`).join('');
+          writeFileSync('delivery/SHA256SUMS', checksums);
+          console.log(checksums);
+          NODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bb-0.50.1-release-hotkeys-215e46f-${{ matrix.target }}
+          path: delivery/
+          if-no-files-found: error
+          retention-days: 30
