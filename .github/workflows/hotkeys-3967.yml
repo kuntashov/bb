@@ -1,4 +1,4 @@
-name: Hotkeys #3967 validation
+name: "Hotkeys #3967 validation"
 on:
   push:
     branches: [ci/hotkeys-3967-validation]
@@ -35,3 +35,59 @@ jobs:
           console.log('Explicit Cyrillic binding', literal);
           assert.equal(literal, true);
           JS
+  fixed:
+    if: ${{ startsWith(github.event.head_commit.message, 'Validate fixed') }}
+    name: ${{ matrix.check }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [app, desktop, domain, persistence, static]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 80849ba59f9731a993a583ba6a769800920f70c4
+          fetch-depth: 2
+      - uses: ./.github/actions/setup-workspace-tools
+        with:
+          node-version: '22.x'
+          pnpm-version: '9.15.0'
+      - name: Install dependencies
+        run: bash .github/actions/setup-workspace/install-dependencies.sh --filter '!@bb/mobile'
+      - name: App shortcut regressions
+        if: matrix.check == 'app'
+        env:
+          VITEST_MAX_WORKERS: '2'
+        run: >
+          pnpm exec turbo run test --filter=@bb/app --output-logs=new-only --concurrency=2 --
+          AppCommandProvider.test.tsx AppCommandProvider.availability.test.tsx CommandPalette.test.tsx
+          app-keybindings.test.ts keyboard-shortcut-settings.test.ts plugin-command-keybindings.test.ts
+      - name: Desktop shortcut regressions
+        if: matrix.check == 'desktop'
+        env:
+          VITEST_MAX_WORKERS: '2'
+        run: >
+          pnpm exec turbo run test --filter=@bb/desktop --output-logs=new-only --concurrency=2 --
+          desktop-browser-shortcuts.test.ts desktop-reload-shortcut.test.ts desktop-menu
+      - name: Domain suite
+        if: matrix.check == 'domain'
+        run: pnpm exec turbo run test --filter=@bb/domain --output-logs=new-only --concurrency=2
+      - name: Saved keybindings through CLI and server
+        if: matrix.check == 'persistence'
+        env:
+          VITEST_MAX_WORKERS: '2'
+        run: |
+          pnpm exec turbo run test --filter=@bb/cli --output-logs=new-only --concurrency=2 -- command-output/settings.test.ts
+          pnpm exec turbo run test --filter=@bb/server --output-logs=new-only --concurrency=2 -- test/system/app-keybindings.test.ts
+      - name: Format changed files
+        if: matrix.check == 'static'
+        run: |
+          mapfile -t changed < <(git diff --name-only HEAD^ HEAD)
+          pnpm exec oxfmt --check "${changed[@]}"
+      - name: Scoped lint and typecheck
+        if: matrix.check == 'static'
+        run: >
+          pnpm exec turbo run lint lint:type-aware typecheck
+          --filter=@bb/app --filter=@bb/desktop --filter=@bb/domain --filter=@bb/cli --filter=@bb/server --filter=@bb/templates
+          --output-logs=new-only --concurrency=2
