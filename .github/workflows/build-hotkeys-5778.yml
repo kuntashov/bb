@@ -8,11 +8,16 @@ on:
         type: boolean
         default: false
 
+      package_only:
+        description: Skip the previously executed public plugin matrix
+        type: boolean
+        default: false
+
 permissions:
   contents: read
 
 env:
-  SOURCE_SHA: 215e46f66e2cfca788e2b57153a905a438fa96d0
+  SOURCE_SHA: 3e7947e9170a0055a75928994fa554ae42b23030
   RELEASE_SHA: a08e116566d1785bc04578a866df8a0359157dd4
   CSC_IDENTITY_AUTO_DISCOVERY: "false"
   VITEST_MAX_WORKERS: "2"
@@ -171,13 +176,13 @@ jobs:
           NODE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: bb-0.50.1-release-hotkeys-215e46f-${{ matrix.target }}
+          name: bb-0.50.1-release-hotkeys-3e7947e-${{ matrix.target }}
           path: delivery/
           if-no-files-found: error
           retention-days: 30
 
   public-plugin:
-    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/audit/bb-0.50.1-hotkeys' && !inputs.windows_only
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/audit/bb-0.50.1-hotkeys' && !inputs.windows_only && !inputs.package_only
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
