@@ -75,7 +75,7 @@ jobs:
           pnpm exec turbo run test --filter=@bb/app --concurrency=2 --output-logs=new-only -- src/components/commands/AppCommandProvider.test.tsx src/components/commands/CommandPalette.test.tsx src/lib/keyboard-shortcut-settings.test.ts src/lib/plugin-command-keybindings.test.ts
           pnpm exec turbo run test --filter=@bb/cli --concurrency=2 --output-logs=new-only -- src/__tests__/command-output/settings.test.ts
           pnpm exec turbo run test --filter=@bb/server --concurrency=2 --output-logs=new-only -- test/system/app-keybindings.test.ts
-          pnpm exec turbo run test --filter=@bb/plugin-inline-vis --concurrency=2 --output-logs=new-only
+          pnpm exec turbo run test --filter=bb-plugin-inline-vis --concurrency=2 --output-logs=new-only
       - name: Linux desktop typecheck
         if: runner.os == 'Linux'
         run: pnpm exec turbo run typecheck --filter=@bb/desktop --concurrency=2 --output-logs=new-only
@@ -175,3 +175,58 @@ jobs:
           path: delivery/
           if-no-files-found: error
           retention-days: 30
+
+  public-plugin:
+    if: github.repository == 'kuntashov/bb' && github.ref == 'refs/heads/audit/bb-0.50.1-hotkeys' && !inputs.windows_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repo: kuntashov/bb-handsfree
+            ref: 576bea3221d1b5b6416fefaaac8c815236c426c3
+          - repo: kuntashov/bb-plugin-pinned-messages
+            ref: 6c21c972d20a332f4f1a6da7808818e199c11115
+          - repo: kuntashov/bb-plugin-project-first-sidebar
+            ref: 9f0814bca2feeb424178481bf1e24899e7f33faf
+          - repo: kuntashov/bb-plugin-ctrl-enter-send
+            ref: bc229ae363e2e632b5b5748108fc2fef8e8dba18
+    env:
+      BB_CLI: ""
+      BB_CLI_REEXEC: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24.x"
+          package-manager-cache: false
+      - name: Install locked plugin dependencies
+        run: npm ci
+      - name: Select BB 0.50.1 and SDK 0.6.157
+        run: |
+          npm install --prefix "$RUNNER_TEMP/bb-toolchain" --no-audit --no-fund bb-app@0.50.1
+          npm install --no-save --package-lock=false --no-audit --no-fund @get-bb/plugin-sdk@0.6.157
+      - name: Build plugin with BB 0.50.1
+        run: |
+          "$RUNNER_TEMP/bb-toolchain/node_modules/.bin/bb" --version
+          "$RUNNER_TEMP/bb-toolchain/node_modules/.bin/bb" plugin build .
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          for (const artifact of ['app', 'server']) {
+            const meta = JSON.parse(readFileSync(`dist/${artifact}.meta.json`, 'utf8'));
+            assert.equal(meta.sdkVersion, '0.6.157');
+            assert.equal(meta.builtWith.bbVersion, '0.50.1');
+            console.log(meta);
+          }
+          NODE
+      - name: Run available source checks against SDK 0.6.157
+        run: |
+          npm run typecheck --if-present
+          npm run check --if-present
+          npm run test --if-present
